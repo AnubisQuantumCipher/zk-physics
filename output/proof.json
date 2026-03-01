@@ -1,5 +1,6 @@
 {
   "k": 13,
+  "note": "100-step collapse preset demo",
   "peak_temperature_K": 11.744151288919978,
   "public_input_labels": [
     "R0",

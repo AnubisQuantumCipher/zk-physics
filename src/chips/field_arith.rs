@@ -11,7 +11,7 @@
 use ff::PrimeField;
 use halo2_proofs::{
     circuit::{AssignedCell, Layouter, Value},
-    plonk::{Advice, Column, ConstraintSystem, Error, Expression, Selector},
+    plonk::{Advice, Column, ConstraintSystem, Error, Expression, Fixed, Selector},
     poly::Rotation,
 };
 use std::marker::PhantomData;
@@ -25,6 +25,7 @@ pub struct FieldArithConfig {
     pub a: Column<Advice>,
     pub b: Column<Advice>,
     pub c: Column<Advice>,
+    pub constant: Column<Fixed>,
     pub s_mul: Selector,
     pub s_div: Selector,
     pub s_add: Selector,
@@ -64,6 +65,9 @@ impl<F: PrimeField> FieldArithChip<F> {
         let s_div = meta.selector();
         let s_add = meta.selector();
         let s_sub = meta.selector();
+
+        let constant = meta.fixed_column();
+        meta.enable_constant(constant);
 
         meta.enable_equality(a);
         meta.enable_equality(b);
@@ -113,6 +117,7 @@ impl<F: PrimeField> FieldArithChip<F> {
             a,
             b,
             c,
+            constant,
             s_mul,
             s_div,
             s_add,
@@ -183,12 +188,9 @@ impl<F: PrimeField> FieldArithChip<F> {
         exp: u32,
     ) -> Result<AssignedCell<F, F>, Error> {
         if exp == 0 {
-            return layouter.assign_region(
-                || "pow_0",
-                |mut region| {
-                    let s_val = Value::known(F::from_u128(SCALE));
-                    region.assign_advice(|| "1.0", self.config.c, 0, || s_val)
-                },
+            return self.load_constant(
+                layouter.namespace(|| "pow_0"),
+                F::from_u128(SCALE),
             );
         }
 
@@ -217,7 +219,7 @@ impl<F: PrimeField> FieldArithChip<F> {
         )
     }
 
-    /// Load a constant value into an advice cell.
+    /// Load a constant value into an advice cell, constrained by a fixed column.
     pub fn load_constant(
         &self,
         mut layouter: impl Layouter<F>,
@@ -226,7 +228,7 @@ impl<F: PrimeField> FieldArithChip<F> {
         layouter.assign_region(
             || "load_constant",
             |mut region| {
-                region.assign_advice(|| "constant", self.config.a, 0, || Value::known(value))
+                region.assign_advice_from_constant(|| "constant", self.config.a, 0, value)
             },
         )
     }
@@ -275,23 +277,6 @@ impl<F: PrimeField> FieldArithChip<F> {
         )
     }
 
-    /// Multiply by a small integer constant (not scaled): c = a * k
-    /// k is an unscaled integer, so c = a * k directly in the field.
-    pub fn mul_by_int(
-        &self,
-        mut layouter: impl Layouter<F>,
-        a: &AssignedCell<F, F>,
-        k: u64,
-    ) -> Result<AssignedCell<F, F>, Error> {
-        layouter.assign_region(
-            || "mul_by_int",
-            |mut region| {
-                a.copy_advice(|| "a", &mut region, self.config.a, 0)?;
-                let c_val = a.value().map(|a_v| *a_v * F::from(k));
-                region.assign_advice(|| "a*k", self.config.c, 0, || c_val)
-            },
-        )
-    }
 }
 
 #[cfg(test)]

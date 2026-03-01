@@ -131,6 +131,7 @@ fn main() {
         "peak_temperature_K": peak_t_float,
         "sonoluminescence": peak_t_float > 5000.0,
         "public_input_labels": ["R0", "final_temperature", "total_emission"],
+        "note": format!("{}-step collapse preset demo", steps),
     });
     fs::write(&pi_file, serde_json::to_string_pretty(&pi_json).unwrap())
         .expect("Failed to write public inputs");

@@ -7,6 +7,7 @@
 use num_bigint::BigInt;
 use num_traits::{ToPrimitive, Zero};
 use std::f64::consts::PI;
+
 /// Scaling factor as BigInt.
 fn scale() -> BigInt {
     BigInt::from(10u64).pow(30)
@@ -22,9 +23,19 @@ fn sdiv(a: &BigInt, b: &BigInt) -> BigInt {
     (a * scale()) / b
 }
 
-/// Convert float to scaled BigInt.
-fn to_scaled(v: f64) -> BigInt {
-    BigInt::from((v * 1e30) as i128)
+/// Convert a float to a scaled BigInt value using BigInt precision.
+/// Splits into integer and fractional parts to avoid f64 precision loss
+/// at large scales (v * 1e30 exceeds f64's 2^53 mantissa for most values).
+fn float_to_scaled_big(v: f64) -> BigInt {
+    let is_neg = v < 0.0;
+    let v_abs = v.abs();
+    let int_part = v_abs.trunc() as u64;
+    let frac_part = v_abs - int_part as f64;
+    let int_scaled = BigInt::from(int_part) * BigInt::from(10u64).pow(30);
+    let frac_hi = (frac_part * 1e15).round() as i64;
+    let frac_scaled = BigInt::from(frac_hi) * BigInt::from(10u64).pow(15);
+    let result = int_scaled + frac_scaled;
+    if is_neg { -result } else { result }
 }
 
 /// Convert BigInt to u128 for halo2.
@@ -32,15 +43,12 @@ fn to_u128(v: &BigInt) -> u128 {
     v.to_u128().expect("Value too large for u128")
 }
 
-/// Convert a float to a scaled BigInt value using BigInt precision.
-/// Uses two-stage multiplication to avoid f64 precision loss at large scales.
-fn float_to_scaled_big(v: f64) -> BigInt {
-    // f64 has ~15 significant digits. Split: v * 10^15 as i64, then * 10^15
-    let hi = (v * 1e15).round() as i64;
-    BigInt::from(hi) * BigInt::from(10u64).pow(15)
-}
-
 /// Full witness for the sonoluminescence simulation.
+///
+/// `r_trace[0]` is the initial radius loaded into the circuit. All subsequent
+/// values `r_trace[1..N]` are informational only (used for peak temperature and
+/// min radius display) — the circuit computes its own trace via constrained
+/// field arithmetic starting from `r_trace[0]`.
 #[derive(Clone, Debug)]
 pub struct SimulationWitness {
     pub r0: u128,
@@ -59,18 +67,130 @@ pub struct SimulationWitness {
     pub cos_values: Vec<i128>,
 }
 
+/// Run the shared Verlet integration loop.
+///
+/// `acoustic_dp` returns the Pa * sin(wt) term for each step (zero for collapse).
+fn simulate_inner(
+    r0: &BigInt, p0: &BigInt, p_initial: &BigInt,
+    dt: &BigInt, dt2: &BigInt, two_sigma: &BigInt,
+    four_s: &BigInt, three_halves_s: &BigInt,
+    rho: &BigInt, mu: &BigInt,
+    r_start: BigInt, n_steps: usize,
+    acoustic_dp: impl Fn(usize) -> BigInt,
+) -> Vec<BigInt> {
+    let mut r_trace_big: Vec<BigInt> = Vec::with_capacity(n_steps + 1);
+    let mut r_curr = r_start;
+    let mut r_prev = r_curr.clone();
+
+    for i in 0..=n_steps {
+        r_trace_big.push(r_curr.clone());
+
+        if i < n_steps {
+            // Velocity
+            let (rdot, rdot_neg) = if i == 0 {
+                (BigInt::zero(), false)
+            } else if r_curr >= r_prev {
+                (sdiv(&(&r_curr - &r_prev), dt), false)
+            } else {
+                (sdiv(&(&r_prev - &r_curr), dt), true)
+            };
+
+            // Gas pressure: P_initial * (R0/R)^5
+            let ratio = sdiv(r0, &r_curr);
+            let ratio2 = smul(&ratio, &ratio);
+            let ratio3 = smul(&ratio2, &ratio);
+            let ratio4 = smul(&ratio3, &ratio);
+            let ratio5 = smul(&ratio4, &ratio);
+            let p_gas = smul(p_initial, &ratio5);
+
+            // 2*sigma/R
+            let two_sigma_over_r = sdiv(two_sigma, &r_curr);
+
+            // 4*mu*Rdot/R
+            let four_mu = smul(four_s, mu);
+            let four_mu_rdot = smul(&four_mu, &rdot);
+            let viscous = sdiv(&four_mu_rdot, &r_curr);
+
+            // delta_P accumulation
+            let mut dp_pos = &p_gas + &two_sigma_over_r;
+            let mut dp_neg = p0.clone();
+            if rdot_neg {
+                dp_pos = dp_pos + &viscous;
+            } else {
+                dp_neg = dp_neg + &viscous;
+            }
+
+            // Acoustic driving
+            let pa_sin = acoustic_dp(i);
+            if pa_sin >= BigInt::zero() {
+                dp_neg = dp_neg + &pa_sin;
+            } else {
+                dp_pos = dp_pos + (-&pa_sin);
+            }
+
+            let (delta_p, delta_p_neg) = if dp_pos >= dp_neg {
+                (&dp_pos - &dp_neg, false)
+            } else {
+                (&dp_neg - &dp_pos, true)
+            };
+
+            // rho * R
+            let rho_r = smul(rho, &r_curr);
+
+            // term1 = delta_P / (rho * R)
+            let term1 = sdiv(&delta_p, &rho_r);
+            let term1_neg = delta_p_neg;
+
+            // term2 = 1.5 * Rdot^2 / R
+            let rdot_sq = smul(&rdot, &rdot);
+            let rdot_sq_over_r = sdiv(&rdot_sq, &r_curr);
+            let term2 = smul(three_halves_s, &rdot_sq_over_r);
+
+            // Rddot = term1 - term2
+            let (rddot, rddot_neg) = if term1_neg {
+                (&term1 + &term2, true)
+            } else if term1 >= term2 {
+                (&term1 - &term2, false)
+            } else {
+                (&term2 - &term1, true)
+            };
+
+            // Verlet: R_next = 2*R_curr - R_prev + Rddot * dt^2
+            let accel_term = smul(&rddot, dt2);
+
+            let r_next = if rddot_neg {
+                let base = &r_curr * 2 - &r_prev;
+                assert!(
+                    base > accel_term,
+                    "Witness r_next underflow at step {i}. Reduce step count or increase dt."
+                );
+                base - &accel_term
+            } else {
+                &r_curr * 2 - &r_prev + &accel_term
+            };
+
+            assert!(r_next > BigInt::zero(), "Witness r_next <= 0 at step {i}");
+
+            r_prev = r_curr;
+            r_curr = r_next;
+        }
+    }
+
+    r_trace_big
+}
+
 impl SimulationWitness {
     /// Generate witness for the collapse preset.
     pub fn collapse_preset(n_steps: usize) -> Self {
         let s = scale();
 
-        let r0 = to_scaled(5.0e-6);
-        let p0 = to_scaled(101325.0);
-        let sigma = to_scaled(0.0728);
-        let mu = to_scaled(1.002e-3);
-        let rho = to_scaled(998.0);
-        let t0 = to_scaled(293.15);
-        let dt = to_scaled(1.0e-9);
+        let r0 = float_to_scaled_big(5.0e-6);
+        let p0 = float_to_scaled_big(101325.0);
+        let sigma = float_to_scaled_big(0.0728);
+        let mu = float_to_scaled_big(1.002e-3);
+        let rho = float_to_scaled_big(998.0);
+        let t0 = float_to_scaled_big(293.15);
+        let dt = float_to_scaled_big(1.0e-9);
         let r_start: BigInt = &r0 * 5; // 5 * R0
 
         // P_initial = P0 + 2*sigma/R0
@@ -82,106 +202,23 @@ impl SimulationWitness {
         // dt^2
         let dt2 = smul(&dt, &dt);
 
-        let r_min: BigInt = &r0 / 100;
-
         let four_s = &s * 4;
         let three_halves_s = &s * 3 / 2;
 
-        let mut r_trace_big: Vec<BigInt> = Vec::with_capacity(n_steps + 1);
-        let mut r_curr = r_start;
-        let mut r_prev = r_curr.clone();
-
-        for i in 0..=n_steps {
-            r_trace_big.push(r_curr.clone());
-
-            if i < n_steps {
-                // Velocity
-                let (rdot, rdot_neg) = if i == 0 {
-                    (BigInt::zero(), false)
-                } else if r_curr >= r_prev {
-                    (sdiv(&(&r_curr - &r_prev), &dt), false)
-                } else {
-                    (sdiv(&(&r_prev - &r_curr), &dt), true)
-                };
-
-                // Gas pressure: P_initial * (R0/R)^5
-                let ratio = sdiv(&r0, &r_curr);
-                let ratio2 = smul(&ratio, &ratio);
-                let ratio3 = smul(&ratio2, &ratio);
-                let ratio4 = smul(&ratio3, &ratio);
-                let ratio5 = smul(&ratio4, &ratio);
-                let p_gas = smul(&p_initial, &ratio5);
-
-                // 2*sigma/R
-                let two_sigma_over_r = sdiv(&two_sigma, &r_curr);
-
-                // 4*mu*Rdot/R
-                let four_mu = smul(&four_s, &mu);
-                let four_mu_rdot = smul(&four_mu, &rdot);
-                let viscous = sdiv(&four_mu_rdot, &r_curr);
-
-                // delta_P
-                let mut dp_pos = &p_gas + &two_sigma_over_r;
-                let mut dp_neg = p0.clone();
-                if rdot_neg {
-                    dp_pos = dp_pos + &viscous;
-                } else {
-                    dp_neg = dp_neg + &viscous;
-                }
-
-                let (delta_p, delta_p_neg) = if dp_pos >= dp_neg {
-                    (&dp_pos - &dp_neg, false)
-                } else {
-                    (&dp_neg - &dp_pos, true)
-                };
-
-                // rho * R
-                let rho_r = smul(&rho, &r_curr);
-
-                // term1 = delta_P / (rho * R)
-                let term1 = sdiv(&delta_p, &rho_r);
-                let term1_neg = delta_p_neg;
-
-                // term2 = 1.5 * Rdot^2 / R
-                let rdot_sq = smul(&rdot, &rdot);
-                let rdot_sq_over_r = sdiv(&rdot_sq, &r_curr);
-                let term2 = smul(&three_halves_s, &rdot_sq_over_r);
-
-                // Rddot = term1 - term2
-                let (rddot, rddot_neg) = if term1_neg {
-                    (&term1 + &term2, true)
-                } else if term1 >= term2 {
-                    (&term1 - &term2, false)
-                } else {
-                    (&term2 - &term1, true)
-                };
-
-                // Verlet: R_next = 2*R_curr - R_prev + Rddot * dt^2
-                let accel_term = smul(&rddot, &dt2);
-
-                let r_next = if rddot_neg {
-                    let base = &r_curr * 2 - &r_prev;
-                    if base > accel_term {
-                        base - &accel_term
-                    } else {
-                        r_min.clone()
-                    }
-                } else {
-                    &r_curr * 2 - &r_prev + &accel_term
-                };
-
-                let r_next = if r_next < r_min { r_min.clone() } else { r_next };
-
-                r_prev = r_curr;
-                r_curr = r_next;
-            }
-        }
+        let r_trace_big = simulate_inner(
+            &r0, &p0, &p_initial,
+            &dt, &dt2, &two_sigma,
+            &four_s, &three_halves_s,
+            &rho, &mu,
+            r_start, n_steps,
+            |_| BigInt::zero(),
+        );
 
         // Convert to u128 for halo2
         let r_trace: Vec<u128> = r_trace_big.iter().map(|r| to_u128(r)).collect();
 
         // Collapse preset: no acoustic driving
-        // sin = 0, cos = 1.0 (scaled) for all steps → Pythagorean identity holds
+        // sin = 0, cos = 1.0 (scaled) for all steps
         let sin_values = vec![0i128; n_steps];
         let cos_values = vec![scale().to_i128().unwrap(); n_steps];
 
@@ -208,14 +245,14 @@ impl SimulationWitness {
     pub fn acoustic_preset(n_steps: usize) -> Self {
         let s = scale();
 
-        let r0 = to_scaled(5.0e-6);
-        let p0 = to_scaled(101325.0);
-        let sigma = to_scaled(0.0728);
-        let mu = to_scaled(1.002e-3);
-        let rho = to_scaled(998.0);
-        let t0 = to_scaled(293.15);
+        let r0 = float_to_scaled_big(5.0e-6);
+        let p0 = float_to_scaled_big(101325.0);
+        let sigma = float_to_scaled_big(0.0728);
+        let mu = float_to_scaled_big(1.002e-3);
+        let rho = float_to_scaled_big(998.0);
+        let t0 = float_to_scaled_big(293.15);
         let dt_f64 = 1.0e-9_f64;
-        let dt = to_scaled(dt_f64);
+        let dt = float_to_scaled_big(dt_f64);
         let r_start: BigInt = &r0 * 5;
         let pa_f64 = 135000.0_f64;
         let freq = 26500.0_f64;
@@ -227,8 +264,6 @@ impl SimulationWitness {
         let p_initial = &p0 + &two_sigma_over_r0;
 
         let dt2 = smul(&dt, &dt);
-
-        let r_min: BigInt = &r0 / 100;
 
         let four_s = &s * 4;
         let three_halves_s = &s * 3 / 2;
@@ -246,108 +281,16 @@ impl SimulationWitness {
         }
 
         // Simulate with acoustic driving
-        let mut r_trace_big: Vec<BigInt> = Vec::with_capacity(n_steps + 1);
-        let mut r_curr = r_start;
-        let mut r_prev = r_curr.clone();
-        let pa_big = to_scaled(pa_f64);
+        let pa_big = float_to_scaled_big(pa_f64);
 
-        for i in 0..=n_steps {
-            r_trace_big.push(r_curr.clone());
-
-            if i < n_steps {
-                // Velocity
-                let (rdot, rdot_neg) = if i == 0 {
-                    (BigInt::zero(), false)
-                } else if r_curr >= r_prev {
-                    (sdiv(&(&r_curr - &r_prev), &dt), false)
-                } else {
-                    (sdiv(&(&r_prev - &r_curr), &dt), true)
-                };
-
-                // Gas pressure: P_initial * (R0/R)^5
-                let ratio = sdiv(&r0, &r_curr);
-                let ratio2 = smul(&ratio, &ratio);
-                let ratio3 = smul(&ratio2, &ratio);
-                let ratio4 = smul(&ratio3, &ratio);
-                let ratio5 = smul(&ratio4, &ratio);
-                let p_gas = smul(&p_initial, &ratio5);
-
-                // 2*sigma/R
-                let two_sigma_over_r = sdiv(&two_sigma, &r_curr);
-
-                // 4*mu*Rdot/R
-                let four_mu = smul(&four_s, &mu);
-                let four_mu_rdot = smul(&four_mu, &rdot);
-                let viscous = sdiv(&four_mu_rdot, &r_curr);
-
-                // delta_P = P_gas - P0 + 2sigma/R - 4mu*Rdot/R
-                let mut dp_pos = &p_gas + &two_sigma_over_r;
-                let mut dp_neg = p0.clone();
-                if rdot_neg {
-                    dp_pos = dp_pos + &viscous;
-                } else {
-                    dp_neg = dp_neg + &viscous;
-                }
-
-                // Acoustic term: -Pa * sin(2*pi*freq*t)
-                // pa_sin = Pa * sin_i
-                let sin_big = BigInt::from(sin_values[i]);
-                let pa_sin = smul(&pa_big, &sin_big);
-                // delta_p_final = old_delta_p - pa_sin
-                // (subtracting pa_sin means: if sin > 0, we subtract, giving negative driving)
-                if pa_sin >= BigInt::zero() {
-                    dp_neg = dp_neg + &pa_sin;
-                } else {
-                    dp_pos = dp_pos + (-&pa_sin);
-                }
-
-                let (delta_p, delta_p_neg) = if dp_pos >= dp_neg {
-                    (&dp_pos - &dp_neg, false)
-                } else {
-                    (&dp_neg - &dp_pos, true)
-                };
-
-                // rho * R
-                let rho_r = smul(&rho, &r_curr);
-
-                // term1 = delta_P / (rho * R)
-                let term1 = sdiv(&delta_p, &rho_r);
-                let term1_neg = delta_p_neg;
-
-                // term2 = 1.5 * Rdot^2 / R
-                let rdot_sq = smul(&rdot, &rdot);
-                let rdot_sq_over_r = sdiv(&rdot_sq, &r_curr);
-                let term2 = smul(&three_halves_s, &rdot_sq_over_r);
-
-                // Rddot = term1 - term2
-                let (rddot, rddot_neg) = if term1_neg {
-                    (&term1 + &term2, true)
-                } else if term1 >= term2 {
-                    (&term1 - &term2, false)
-                } else {
-                    (&term2 - &term1, true)
-                };
-
-                // Verlet: R_next = 2*R_curr - R_prev + Rddot * dt^2
-                let accel_term = smul(&rddot, &dt2);
-
-                let r_next = if rddot_neg {
-                    let base = &r_curr * 2 - &r_prev;
-                    if base > accel_term {
-                        base - &accel_term
-                    } else {
-                        r_min.clone()
-                    }
-                } else {
-                    &r_curr * 2 - &r_prev + &accel_term
-                };
-
-                let r_next = if r_next < r_min { r_min.clone() } else { r_next };
-
-                r_prev = r_curr;
-                r_curr = r_next;
-            }
-        }
+        let r_trace_big = simulate_inner(
+            &r0, &p0, &p_initial,
+            &dt, &dt2, &two_sigma,
+            &four_s, &three_halves_s,
+            &rho, &mu,
+            r_start, n_steps,
+            |i| smul(&pa_big, &BigInt::from(sin_values[i])),
+        );
 
         let r_trace: Vec<u128> = r_trace_big.iter().map(|r| to_u128(r)).collect();
 
@@ -363,7 +306,7 @@ impl SimulationWitness {
             dt2: to_u128(&dt2),
             r_trace,
             n_steps,
-            pa: to_u128(&to_scaled(pa_f64)),
+            pa: to_u128(&float_to_scaled_big(pa_f64)),
             sin_values,
             cos_values,
         }

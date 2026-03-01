@@ -358,4 +358,15 @@ mod tests {
         let prover = MockProver::run(k, &circuit, vec![public_inputs]).unwrap();
         prover.assert_satisfied();
     }
+
+    #[test]
+    fn test_circuit_50_steps_acoustic() {
+        let witness = SimulationWitness::acoustic_preset(50);
+        let public_inputs = compute_public_inputs::<Fr>(&witness);
+        let circuit = SonoluminescenceCircuit::new(witness);
+        let k = SonoluminescenceCircuit::min_k(50);
+
+        let prover = MockProver::run(k, &circuit, vec![public_inputs]).unwrap();
+        prover.assert_satisfied();
+    }
 }
