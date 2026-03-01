@@ -25,9 +25,10 @@ SonoluminescenceCircuit
 
 ## Public Inputs
 
-Only two values are exposed:
+Three values are exposed:
 1. **R₀** (row 0) — equilibrium bubble radius
 2. **Final temperature** (row 1) — temperature at the last simulation step
+3. **Total emission count** (row 2) — number of steps exceeding the sonoluminescence threshold
 
 All other parameters (pressure, viscosity, surface tension, etc.) remain private.
 
@@ -85,6 +86,8 @@ c × b - a × S = 0  (mod p)
 Witness: `c = a × S × b⁻¹ mod p`
 
 Methods: `scaled_mul`, `scaled_div`, `scaled_pow`, `load_private`, `load_constant`, `add`, `sub`
+
+**Constants**: Loaded via `assign_advice_from_constant` with a dedicated `Column<Fixed>` and `enable_constant()`. This ensures constants are constrained by the verifier — unlike raw `assign_advice`, which would allow the prover to substitute arbitrary values.
 
 ### PhysicsStep
 

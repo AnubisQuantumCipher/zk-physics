@@ -27,12 +27,12 @@ cargo run --release --bin benchmark
 
 | File | Lines | Role |
 |------|------:|------|
-| `src/chips/field_arith.rs` | 722 | Scaled fixed-point multiply/divide gates |
+| `src/chips/field_arith.rs` | 707 | Scaled fixed-point multiply/divide gates |
 | `src/chips/physics_step.rs` | 532 | Rayleigh-Plesset ODE step as halo2 chip |
-| `src/circuits/sonoluminescence.rs` | 361 | Full circuit: N chained physics steps |
-| `src/witness.rs` | 455 | BigInt witness generation with field replay |
+| `src/circuits/sonoluminescence.rs` | 372 | Full circuit: N chained physics steps |
+| `src/witness.rs` | 398 | BigInt witness generation with field replay |
 | `src/field_utils.rs` | 166 | Fixed-point scaling (S = 10^30) and conversions |
-| `src/bin/prove.rs` | 155 | CLI: generate KZG proof |
+| `src/bin/prove.rs` | 156 | CLI: generate KZG proof |
 | `src/bin/verify.rs` | 192 | CLI: verify proof from file |
 | `src/bin/benchmark.rs` | 142 | Benchmark across step counts |
 | `tests/privacy.rs` | 222 | Privacy tests: verify hidden parameters stay hidden |
