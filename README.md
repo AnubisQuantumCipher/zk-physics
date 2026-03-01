@@ -74,12 +74,12 @@ At ~2,359 steps the bubble reaches minimum radius (~0.77 um) with peak temperatu
 This project is the basis for an 8-part technical series on [Jacobian](https://jacobian.ghost.io):
 
 1. [Why Fixed-Point Arithmetic is the Hardest Part of ZK](https://jacobian.ghost.io/why-fixed-point-arithmetic-is-the-hardest-part-of-zk/)
-2. [Building Custom halo2 Chips: A Field Arithmetic Walkthrough](https://jacobian.ghost.io/building-custom-halo2-chips/) *(Pro)*
+2. [Building Custom halo2 Chips: A Field Arithmetic Walkthrough](https://jacobian.ghost.io/building-custom-halo2-chips-a-field-arithmetic-walkthrough/) *(Pro)*
 3. [Proving Physics: Encoding Differential Equations in ZK](https://jacobian.ghost.io/proving-physics-encoding-differential-equations-in-zk/)
-4. [1,088 Bytes to Prove a Star: Constant-Size Proofs with KZG](https://jacobian.ghost.io/1088-bytes-to-prove-a-star/) *(Pro)*
-5. [The Witness Problem: When BigInt Precision Breaks Your Proof](https://jacobian.ghost.io/the-witness-problem/)
-6. [Testing ZK Privacy: How to Verify Proofs Hide What They Should](https://jacobian.ghost.io/testing-zk-privacy/) *(Pro)*
-7. [Python to Rust to Proof: Cross-Validating a ZK System](https://jacobian.ghost.io/python-to-rust-to-proof/)
+4. [1,088 Bytes to Prove a Star: Constant-Size Proofs with KZG](https://jacobian.ghost.io/1-088-bytes-to-prove-a-star-constant-size-proofs-with-kzg/) *(Pro)*
+5. [The Witness Problem: When BigInt Precision Breaks Your Proof](https://jacobian.ghost.io/the-witness-problem-when-bigint-precision-breaks-your-proof/)
+6. [Testing ZK Privacy: How to Verify Proofs Hide What They Should](https://jacobian.ghost.io/testing-zk-privacy-how-to-verify-proofs-hide-what-they-should/) *(Pro)*
+7. [Python to Rust to Proof: Cross-Validating a ZK System](https://jacobian.ghost.io/python-to-rust-to-proof-cross-validating-a-zk-system/)
 8. [Sonoluminescence: The Physics of Light from Nothing](https://jacobian.ghost.io/sonoluminescence-the-physics-of-light-from-nothing/) *(Pro)*
 
 New here? [Get the free halo2 circuit guide](https://jacobian.ghost.io/build-your-first-halo2-circuit/) -- build your first custom chip step by step.
