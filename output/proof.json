@@ -1,0 +1,16 @@
+{
+  "k": 13,
+  "peak_temperature_K": 11.744151288919978,
+  "public_input_labels": [
+    "R0",
+    "final_temperature",
+    "total_emission"
+  ],
+  "public_inputs": [
+    "0x0000000000000000000000000000000000000000000422ca8b0a00a440000000",
+    "0x1624475edd78fb21a90bb8821fe230fc41b45ecbbe492d62486c68251d64c4d0",
+    "0x1caf31e2cd8bae67ef53b4defddbec1456dca1566d0b7a4d7a2c29ee8af0703f"
+  ],
+  "sonoluminescence": false,
+  "steps": 100
+}

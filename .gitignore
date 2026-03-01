@@ -1,0 +1,13 @@
+# Build
+target/
+
+# Binary outputs (large SRS params, proof/vk binaries)
+output/*.bin
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# OS
+.DS_Store
